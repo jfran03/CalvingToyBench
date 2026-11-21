@@ -4,9 +4,10 @@ Usage:
   python bench.py --provider anthropic --model claude-sonnet-5-5 --features both
   python bench.py --provider openai    --model <openai-model-id> --features gps_only
   python bench.py --provider gemini    --model <gemini-model-id> --features accel_only
+  python bench.py --provider jev       --model jev-1.14.0 --features both  # TypeSafe Jev (Noul)
   python bench.py --provider mock      --model rule  --features both   # offline dry run
 
-Keys come from OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY.
+Keys come from OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, TYPESAFE_API_KEY.
 Results are appended to results/<provider>__<model>__<features>.jsonl and the
 run resumes where it left off, so it is safe to Ctrl-C and restart.
 """
@@ -96,6 +97,64 @@ def call_gemini(model, prompt):
     return "".join(p.get("text", "") for p in j["candidates"][0]["content"]["parts"]), j.get("usageMetadata", {})
 
 
+# --- TypeSafe Jev -------------------------------------------------------------------------------
+# Jev is not a chat model: it takes structured `state` plus typed questions and returns a calibrated
+# probability per question. A Noul is "probability this statement is true", which is exactly the
+# score AUROC/AUPRC need. Jev gives no reason, so reason is "".
+# Jev gets the SAME information as the LLMs: jev_state() rebuilds it from build_prompt's text (the
+# Harbor agent only ever sees that text), minus the "reply with JSON" line, which a Noul doesn't need.
+# All Jev wording lives here so it can be audited in one place.
+
+JEV_QUESTION_ID = "calving_within_24h"
+JEV_QUESTION = {
+    "type": "noul",
+    "instructions": "This cow is calving now or will calve within the next 24 hours.",
+    "criteria": {
+        "true": "Her calving is under way now or starts within the next 24 hours.",
+        "false": "Her calving is still more than 24 hours away.",
+    },
+}
+
+
+def _num(s):
+    return None if s == "" else (float(s) if "." in s else int(s))
+
+
+def jev_state(prompt):
+    """Parse a build_prompt() string into Jev state. Raises if the prompt layout changes."""
+    intro, rest = prompt.split("\n\nBelow are her last 48 hours", 1)
+    cols_txt = rest.split("Columns:\n", 1)[1].split("\n\n", 1)[0]
+    base_txt = rest.split("preceding 5 days:\n", 1)[1].split("\n\nData:", 1)[0]
+    data_txt = rest.split("Data:\n", 1)[1].split("\n\nQuestion:", 1)[0]
+    defs = dict(l[2:].split(": ", 1) for l in cols_txt.splitlines())
+    baseline = {}
+    for l in base_txt.splitlines():
+        m = re.fullmatch(r"- (\w+): median ([-\d.]+), 90th pct ([-\d.]+)", l)
+        baseline[m.group(1)] = {"median": float(m.group(2)), "p90": float(m.group(3))}
+    rows = [l.split(",") for l in data_txt.splitlines()]
+    hdr = rows[0]
+    return {
+        "cow": intro,
+        "data_description": "Her last 48 hours of hourly collar data. rel_h=0 is now; hour_local is "
+                            "local clock hour (0-23). null means missing data.",
+        "column_definitions": defs,
+        "her_typical_values_over_preceding_5_days": baseline,
+        "hourly_data": [dict(zip(hdr, map(_num, r))) for r in rows[1:]],
+    }
+
+
+def call_jev(model, prompt):
+    r = requests.post("https://api.typesafe.ai/v1/systemone", timeout=180,
+                      headers={"Authorization": f"Bearer {os.environ['TYPESAFE_API_KEY']}"},
+                      json={"model": model, "state": jev_state(prompt),
+                            "questions": {JEV_QUESTION_ID: JEV_QUESTION}})
+    r.raise_for_status()
+    j = r.json()
+    p = j["answers"][JEV_QUESTION_ID]["noul"]  # KeyError -> treated as a failed call, never as a "no"
+    usage = dict(j.get("usage", {}), resolved_model=j.get("model"))
+    return json.dumps({"probability": p, "reason": ""}), usage
+
+
 def call_mock(model, prompt):
     """Offline stand-in: flags isolation or low movement vs baseline. Tests the plumbing only."""
     rows = [l.split(",") for l in prompt.split("Data:\n")[1].split("\n\nQuestion")[0].splitlines()]
@@ -110,7 +169,8 @@ def call_mock(model, prompt):
     return json.dumps({"probability": score, "reason": "mock rule"}), {}
 
 
-CALL = {"openai": call_openai, "anthropic": call_anthropic, "gemini": call_gemini, "mock": call_mock}
+CALL = {"openai": call_openai, "anthropic": call_anthropic, "gemini": call_gemini, "jev": call_jev,
+        "mock": call_mock}
 
 
 def run_one(provider, model, w, feats):
@@ -123,7 +183,7 @@ def run_one(provider, model, w, feats):
                     "hours_to_calving": w["hours_to_calving"], "prob": p, "reason": reason, "usage": usage}
         except requests.HTTPError as e:
             code = e.response.status_code
-            if code in (400, 401, 403, 404):
+            if code in (400, 401, 403, 404, 422):
                 raise SystemExit(f"{provider} error {code}: {e.response.text[:500]}")
             time.sleep(2 ** attempt * 3)
         except Exception as e:

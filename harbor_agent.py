@@ -9,7 +9,7 @@ so the API key never enters the sandbox and the sandbox can stay offline.
 
 Run (from the project root, see harbor_run.py):
   harbor run -p harbor_tasks/both -a harbor_agent:ZeroShotAgent -m anthropic/claude-sonnet-5-5 --env-file .env
-Supported providers: anthropic, openai, mock (offline, no key, tests the plumbing).
+Supported providers: anthropic, openai, jev (TypeSafe), mock (offline, no key, tests the plumbing).
 """
 import asyncio, json, tempfile
 from pathlib import Path
@@ -21,7 +21,7 @@ from harbor.models.agent.context import AgentContext
 
 from bench import CALL, parse  # same API calls, system prompt and JSON parser as bench.py
 
-PROVIDERS = ("anthropic", "openai", "mock")
+PROVIDERS = ("anthropic", "openai", "jev", "mock")
 ANSWER_PATH = "/app/answer.json"
 
 
@@ -68,7 +68,7 @@ class ZeroShotAgent(BaseAgent):
                 return {"probability": p, "reason": reason}, log
             except requests.HTTPError as e:
                 code = e.response.status_code
-                if code in (400, 401, 403, 404):
+                if code in (400, 401, 403, 404, 422):
                     raise RuntimeError(f"{provider} error {code}: {e.response.text[:500]}") from e
                 log["error"] = f"HTTP {code}"
                 _sleep(2 ** attempt * 3)

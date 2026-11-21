@@ -32,7 +32,7 @@ def load_dotenv(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", help="<provider>/<model>, provider in anthropic|openai|mock")
+    ap.add_argument("--model", help="<provider>/<model>, provider in anthropic|openai|jev|mock")
     ap.add_argument("--oracle", action="store_true", help="run Harbor's oracle agent (writes the true label)")
     ap.add_argument("--features", default="both", choices=FEATURES)
     ap.add_argument("--limit", type=int, default=0, help="only N tasks (smoke test)")
