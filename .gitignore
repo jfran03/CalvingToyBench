@@ -2,7 +2,6 @@
 .rederive/
 jobs/
 harbor_tasks/
-results/
 CalvingDetection/
 __pycache__/
 skills-lock.json
