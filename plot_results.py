@@ -16,11 +16,13 @@ from sklearn.metrics import precision_recall_curve, roc_curve
 from score import FEATURES, logreg_scores, metrics, rule_scores
 
 # List prices in USD per million tokens (input, output), as of 2026-11. Update if prices change.
-PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.00, 10.00)}
+PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.00, 10.00), "gpt-6-luna":(0.10,0.50), "gpt-6.2-sol": (2.00, 10.00)}
 
 LLM_RUNS = [  # (label, results file, model id for pricing)
     ("Claude Haiku 5.5", "results/harbor__anthropic_claude-haiku-5-5__both.jsonl", "claude-haiku-5-5"),
     ("Claude Sonnet 5.5", "results/harbor__anthropic_claude-sonnet-5-5__both.jsonl", "claude-sonnet-5-5"),
+    ("GPT-6 Luna", "results/harbor__openai_gpt-6-luna__both.jsonl", "gpt-6-luna"),
+    ("GPT-6.2 Sol", "results/harbor__openai_gpt-6.2-sol__both.jsonl", "gpt-6.2-sol"),
 ]
 
 # Chart ink (reference palette, light mode). Baselines are recessive grey; the LLMs carry colour.
@@ -30,6 +32,8 @@ STYLE = {
     "Logistic regression (both)": dict(color=MUTED, ls=(0, (4, 2))),
     "Claude Haiku 5.5":           dict(color="#2a78d6", ls="-"),
     "Claude Sonnet 5.5":          dict(color="#eb6834", ls="-"),
+    "GPT-6 Luna":                 dict(color="#2a9d62", ls="-"),
+    "GPT-6.2 Sol":                dict(color="#8a4fd0", ls="-"),
 }
 
 
@@ -88,9 +92,9 @@ def main():
     plotted = [k for k in STYLE if k in runs]
 
     plt.rcParams["font.family"] = ["Segoe UI", "DejaVu Sans", "sans-serif"]
-    fig = plt.figure(figsize=(15, 9.0), facecolor=SURFACE)
-    gs = fig.add_gridspec(2, 3, height_ratios=[1, 0.55], hspace=0.30, wspace=0.26,
-                          left=0.05, right=0.98, top=0.86, bottom=0.03)
+    fig = plt.figure(figsize=(15, 10.6), facecolor=SURFACE)
+    gs = fig.add_gridspec(2, 3, height_ratios=[1, 0.7], hspace=0.30, wspace=0.26,
+                          left=0.05, right=0.98, top=0.88, bottom=0.02)
     ax_roc, ax_pr, ax_tr = (fig.add_subplot(gs[0, i]) for i in range(3))
 
     for name in plotted:
@@ -119,11 +123,11 @@ def main():
     ax_tr.set_xlim(0, 15); ax_tr.set_ylim(0, 15.5)
 
     h, l = ax_roc.get_legend_handles_labels()
-    fig.legend(h, l, loc="upper left", bbox_to_anchor=(0.05, 0.935), ncol=4, frameon=False, fontsize=9,
+    fig.legend(h, l, loc="upper left", bbox_to_anchor=(0.05, 0.945), ncol=6, frameon=False, fontsize=9,
                labelcolor=INK2, handlelength=2.6)
-    fig.text(0.05, 0.965, "Zero-shot LLMs vs hand-built baselines: calving alerts from collar data",
+    fig.text(0.05, 0.972, "Zero-shot LLMs vs hand-built baselines: calving alerts from collar data",
              fontsize=14, color=INK, weight="bold")
-    fig.text(0.98, 0.965, f"735 windows, 15 cows, {prev:.0%} positive. Baselines leave-one-cow-out.",
+    fig.text(0.98, 0.972, f"735 windows, 15 cows, {prev:.0%} positive. Baselines leave-one-cow-out.",
              fontsize=9, color=MUTED, ha="right")
 
     # Table: the same rows and columns as `python score.py --thr <thr>`, plus estimated cost.
