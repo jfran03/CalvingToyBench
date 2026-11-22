@@ -5,3 +5,4 @@ harbor_tasks/
 CalvingDetection/
 __pycache__/
 skills-lock.json
+docs/
