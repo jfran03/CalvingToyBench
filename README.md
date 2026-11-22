@@ -65,6 +65,20 @@ not means, so `harbor_collect.py` converts each job into `results/harbor__*.json
 it exactly like a `bench.py` run. Re-running the same `harbor_run.py` command resumes the job.
 Browse trials and raw model replies with `harbor view jobs`.
 
+## Authors' pretrained models (AE + RF)
+`calvingdetection_baseline.py` scores the CalvingDetection authors' own pipeline on the same 735 windows, with no retraining:
+```bash
+python calvingdetection_baseline.py --repo CalvingDetection   # -> results/cd__rf_pretrained.jsonl, results/cd__ae_only.jsonl
+python score.py
+```
+- `cd__ae_only`: share of the last 12 h that the authors' autoencoder flagged as anomalous (their saved `anomalies_from_AE` files).
+- `cd__rf_pretrained`: max random-forest probability over the flagged hours in the last 12 h (0 if none). Each cow is scored by the RF fold that held it out (3 cows per fold).
+- Not like-for-like with the LLMs or leave-one-cow-out baselines:
+  1. The RF was trained on +-24 h around birth (including after); our positive is [t-6 h, t+24 h).
+  2. The AE threshold is each cow's season-wide 95th percentile (uses future data), and the AE trained on each cow's days before day -5, so it is not deployable as-is.
+  3. Only flagged hours get a score, so most windows tie at 0; AUROC and threshold-0.5 columns are coarse.
+  4. The paper reports per-cow cluster F1, a different metric that we do not reproduce.
+
 ## Metrics (score.py)
 - AUROC / AUPRC per window (chance AUPRC = 0.10).
 - At the alert threshold (default 0.5): cows detected, median lead time (h before calving), false alarms per cow-week.
