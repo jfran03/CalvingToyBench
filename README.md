@@ -1,6 +1,41 @@
-# Agrivanna: zero-shot LLM baseline for calving alerts
+# Zero Shot Calving Benchmark
 
-Can off-the-shelf LLMs (OpenAI, Claude, Gemini) spot imminent calving from collar data, with no training?
+Question: Can a LLM forecast future claving events based on multimodal sensor data, specifically, GPS and accelerometer readings
+
+# Key Ideas
+- I benchmarked Claude, GPT, and TypeSafe (system one AI) models with a zero shot prompt (contained a set of GPS and Accelerometer data at a given window and asked to see if a cow was calving based on that data) to see if current LLM reasoning is able to detect the 15 cows calving. 
+- To make it theoretically more viable for a rancher to adopt, I had a hard constraint with false alarms needing to be less than or equal to 1. Given this constraint, LLMs seem to be able to detect more cow calving events but does not need higher reasoning models to achieve such metrics (interestingly, cheaper models seem to work better)
+- AUROC demonstrates that it can't discriminate normal cows vs pre-calving cows as well, AUPRC seems to flag real events 20% of the time. Better than the baselines but not the best in general
+- **This suggests further research of using LLMs to identify livestock events (estrus, illness/injury, threats) solely on GPS and accelerometer data rather than traditional ML methods. A primary direction could be fine-tuning or better prompting to an open weight model for offline inference** 
+
+# Motivation
+
+[Wang et al.](https://www.mdpi.com/2077-0472/15/13/1434/pdf) utilized traditional machine learning methods (autoencoder & random forest) to successfilly determine if the systems were able to identify 15 calving events. The paper states that evaluating the model's generalization on these types of tasks is a possible open line of research, current large language models (LLMS) could provide a solution to generalizing these tasks by using its reasoning capabilities to classify calving events. There does not exist research that investigates the use of LLMs to identify these events solely on GPS and accelerometer data, this experiment attempts to address this open question.
+
+## Alert threshold: false-alarm budget
+
+**Step 1: count false alarms for a candidate threshold.** A false alarm is a window with no calving coming that the model scores at or above the threshold. Divide by the amount of non-calving time, in cow-weeks, to get a rate:
+
+$$
+\text{FA rate}(t) = \frac{\text{non-calving windows scored} \ge t}{\text{non-calving cow-weeks}}
+$$
+
+Raising $t$ can only lower this rate.
+
+**Step 2: take the lowest threshold that stays within budget.** Try every distinct score the model produced and keep the lowest one whose FA rate is at most the budget $\beta$ (1.0 by default):
+
+$$
+t^{*} = \min \{\, t : \text{FA rate}(t) \le \beta \,\}
+$$
+
+Lower thresholds alert more often and so catch more cows, so this is the most sensitive threshold the budget allows. If even the highest score is over budget, $t^{*} = \infty$ and the model never alerts.
+
+**Step 3: do it leave-one-cow-out.** Steps 1 and 2 use only the other 14 cows. The resulting $t^{*}$ is then applied to the held-out cow, and we repeat for all 15 cows. A window raises an alert when
+
+$$
+p_{\text{window}} \ge t^{*}_{\text{its cow}}
+$$
+
 
 ## Data
 CalvingDetection (Cao et al., 2025, *Agriculture* 15(13):1434), GPL-3.0.
@@ -78,13 +113,3 @@ python score.py
   2. The AE threshold is each cow's season-wide 95th percentile (uses future data), and the AE trained on each cow's days before day -5, so it is not deployable as-is.
   3. Only flagged hours get a score, so most windows tie at 0; AUROC and threshold-0.5 columns are coarse.
   4. The paper reports per-cow cluster F1, a different metric that we do not reproduce.
-
-## Metrics (score.py)
-- AUROC / AUPRC per window (chance AUPRC = 0.10).
-- At the alert threshold (default 0.5): cows detected, median lead time (h before calving), false alarms per cow-week.
-- Comparators, built with leave-one-cow-out so they never see the test cow: an isolation threshold rule and logistic regression on each feature set.
-
-## Caveats
-- Only 15 events, so this shows whether a signal exists, not production readiness.
-- Label timing is coarse (+/- ~12 h).
-- LLMs are weak at reading long numeric tables. A poor result means "not zero-shot", not "no signal in the data".

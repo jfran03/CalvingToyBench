@@ -6,3 +6,4 @@ CalvingDetection/
 __pycache__/
 skills-lock.json
 docs/
+.pytest_cache/

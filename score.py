@@ -1,11 +1,16 @@
 """Score LLM runs and compare them with two classic baselines.
 
-Usage: python score.py            # scores every file in results/
-       python score.py --thr 0.5  # alert threshold on the probability
+Usage: python score.py            # default: per-model threshold tuned to a false-alarm budget
+       python score.py --fa-lo 0.5 --fa-hi 1.0   # the budget, in false alarms per cow-week
+       python score.py --thr 0.5  # fixed alert threshold on the probability instead
 
 Window-level: AUROC and AUPRC (threshold-free; chance AUPRC = positive rate).
 Event-level at the threshold: cows detected (any positive window alerted),
 median lead time before calving, false alarms per cow-week.
+Budget mode: for each held-out cow, the threshold is the lowest one that keeps the OTHER 14 cows'
+false alarms <= --fa-hi per cow-week (lowest threshold = most cows caught within budget). It is
+applied to the held-out cow and the results are pooled, so the threshold never sees the cow it
+scores. The realised FA/wk can land outside [fa-lo, fa-hi]; it is flagged with * when it does.
 Baselines are computed from windows.jsonl with leave-one-cow-out, so they never
 see the test cow.
 """
@@ -43,7 +48,35 @@ def logreg_scores(W, feats):
     return list(s)
 
 
+def pick_threshold(recs, fa_hi):
+    """Lowest probability threshold whose false alarms stay <= fa_hi per cow-week on these recs.
+    inf (never alert) if even the highest score exceeds the budget."""
+    negs = np.sort([r["prob"] for r in recs if not r["label"]])
+    weeks = len(negs) * STEP_H / 168
+    cands = np.unique([r["prob"] for r in recs])  # ascending; FA is non-increasing in the threshold
+    fa = (len(negs) - np.searchsorted(negs, cands, side="left")) / weeks  # negatives with prob >= t
+    ok = np.where(fa <= fa_hi)[0]
+    return float(cands[ok[0]]) if len(ok) else float("inf")
+
+
+def evaluate(recs, thr, fa_lo, fa_hi):
+    """metrics() at a fixed threshold (thr is a number), or, if thr is None, at the leave-one-cow-out
+    false-alarm-budget thresholds. Adds 'thr' (median across folds) and 'in_range'."""
+    if thr is not None:
+        out = metrics(recs, thr); out["thr"] = thr; out["in_range"] = True
+        return out
+    recs = [r for r in recs if r.get("prob") is not None]
+    per_cow = {c: pick_threshold([r for r in recs if r["cow"] != c], fa_hi) for c in {r["cow"] for r in recs}}
+    out = metrics(recs, per_cow)
+    finite = [t for t in per_cow.values() if np.isfinite(t)]
+    out["thr"] = float(np.median(finite)) if finite else None
+    fa = out["fa_per_cow_week"]
+    out["in_range"] = fa is not None and fa_lo <= fa <= fa_hi
+    return out
+
+
 def metrics(recs, thr):
+    """thr is a number, or a {cow: threshold} dict (used by the leave-one-cow-out budget mode)."""
     recs = [r for r in recs if r.get("prob") is not None]
     y = np.array([r["label"] for r in recs]); p = np.array([r["prob"] for r in recs])
     out = {"n": len(recs)}
@@ -52,11 +85,12 @@ def metrics(recs, thr):
     cows = sorted({r["cow"] for r in recs}); det, leads, fa, neg_h = 0, [], 0, 0
     for c in cows:
         rc = [r for r in recs if r["cow"] == c]
-        hits = [r for r in rc if r["label"] and r["prob"] >= thr]
+        t = thr[c] if isinstance(thr, dict) else thr
+        hits = [r for r in rc if r["label"] and r["prob"] >= t]
         if hits:
             det += 1; leads.append(max(r["hours_to_calving"] for r in hits))
         negs = [r for r in rc if not r["label"]]
-        fa += sum(r["prob"] >= thr for r in negs); neg_h += len(negs) * STEP_H
+        fa += sum(r["prob"] >= t for r in negs); neg_h += len(negs) * STEP_H
     out["detected"] = f"{det}/{len(cows)}"
     out["lead_h"] = float(np.median(leads)) if leads else None
     out["fa_per_cow_week"] = fa / (neg_h / 168) if neg_h else None
@@ -65,33 +99,84 @@ def metrics(recs, thr):
 
 def fmt(name, m):
     g = lambda k, f: (f.format(m[k]) if m.get(k) is not None else "  -  ")
-    return (f"{name:<52} {m['n']:>4}  {g('auroc','{:.2f}'):>5}  {g('auprc','{:.2f}'):>5}  "
-            f"{m['detected']:>6}  {g('lead_h','{:.0f}'):>5}  {g('fa_per_cow_week','{:.1f}'):>6}")
+    star = "" if m.get("in_range", True) else "*"
+    return (f"{name:<52} {m['n']:>4}  {g('auroc','{:.2f}'):>5}  {g('auprc','{:.2f}'):>5}  {g('thr','{:.2f}'):>5}  "
+            f"{m['detected']:>6}  {g('lead_h','{:.0f}'):>5}  {g('fa_per_cow_week','{:.1f}') + star:>6}")
+
+
+def bootstrap(runs, cows, evaluate_fn, n_boot, seed=0):
+    """Cluster bootstrap over cows. Each replicate resamples the cows with replacement (a cow drawn twice
+    counts twice, and its windows stay together) and re-runs the whole pipeline, including the
+    leave-one-cow-out threshold tuning. The same resample is applied to every run, so differences between
+    runs are paired. Uses saved scores only: no model calls. Returns {name: {metric: array of n_boot}}."""
+    by_cow = {name: {c: [] for c in cows} for name, _ in runs}
+    for name, recs in runs:
+        for r in recs:
+            if r["cow"] in by_cow[name]:
+                by_cow[name][r["cow"]].append(r)
+    out = {name: {"auroc": [], "auprc": [], "cows": [], "fa": []} for name, _ in runs}
+    for b in range(n_boot):
+        draw = np.random.default_rng([seed, b]).integers(0, len(cows), len(cows))
+        for name, _ in runs:
+            # rename each drawn copy so duplicates of one cow are separate cows to metrics()/pick_threshold()
+            recs = [dict(r, cow=f"{cows[i]}#{j}") for j, i in enumerate(draw) for r in by_cow[name][cows[i]]]
+            m = evaluate_fn(recs)
+            out[name]["auroc"].append(m.get("auroc", np.nan)); out[name]["auprc"].append(m.get("auprc", np.nan))
+            out[name]["cows"].append(int(m["detected"].split("/")[0]))
+            out[name]["fa"].append(np.nan if m["fa_per_cow_week"] is None else m["fa_per_cow_week"])
+    return {n: {k: np.array(v, dtype=float) for k, v in d.items()} for n, d in out.items()}
+
+
+def print_bootstrap(res, ref, n_boot, n_cows):
+    ci = lambda x, f: (lambda q: f"{f.format(q[1])} [{f.format(q[0])}, {f.format(q[2])}]")(np.nanpercentile(x, [2.5, 50, 97.5]))
+    print(f"\nCluster bootstrap over cows ({n_boot} resamples of {n_cows} cows): median [95% CI]. "
+          f"Delta = paired difference vs '{ref}'.\n")
+    print(f"{'run':<52} {'AUROC':>20}  {'AUPRC':>20}  {'cows detected':>18}  {'delta cows vs ref':>20}  {'FA/wk':>18}")
+    for name, d in res.items():
+        delta = "" if name == ref else ci(d["cows"] - res[ref]["cows"], "{:.0f}")
+        print(f"{name:<52} {ci(d['auroc'], '{:.2f}'):>20}  {ci(d['auprc'], '{:.2f}'):>20}  "
+              f"{ci(d['cows'], '{:.0f}'):>18}  {delta:>20}  {ci(d['fa'], '{:.1f}'):>18}")
 
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--boot", type=int, default=1000, help="cow-level bootstrap resamples for the CIs (0 = skip)")
+    ap.add_argument("--seed", type=int, default=0, help="bootstrap seed")
     ap.add_argument("--windows", default="windows.jsonl")
-    ap.add_argument("--thr", type=float, default=0.5)
+    ap.add_argument("--thr", type=float, default=None, help="fixed threshold; default = tune to the FA budget")
+    ap.add_argument("--fa-lo", type=float, default=0.5)
+    ap.add_argument("--fa-hi", type=float, default=1.0)
     a = ap.parse_args()
     W = [json.loads(l) for l in open(a.windows)]
     prev = np.mean([w["label"] for w in W])
-    print(f"{len(W)} windows, positive rate {prev:.2f} (= chance AUPRC). Alert threshold {a.thr}.\n")
-    print(f"{'run':<52} {'n':>4}  {'AUROC':>5}  {'AUPRC':>5}  {'cows':>6}  {'lead':>5}  {'FA/wk':>6}")
+    mode = (f"Alert threshold {a.thr}" if a.thr is not None else
+            f"Per-model leave-one-cow-out threshold for {a.fa_lo}-{a.fa_hi} false alarms/cow-week (* = realised rate outside it)")
+    print(f"{len(W)} windows, positive rate {prev:.2f} (= chance AUPRC). {mode}.\n")
+    print(f"{'run':<52} {'n':>4}  {'AUROC':>5}  {'AUPRC':>5}  {'thr':>5}  {'cows':>6}  {'lead':>5}  {'FA/wk':>6}")
+    metrics_ = lambda recs: evaluate(recs, a.thr, a.fa_lo, a.fa_hi)
 
     base = lambda s: [dict(id=w["id"], cow=w["cow"], label=w["label"],
                            hours_to_calving=w["hours_to_calving"], prob=float(v)) for w, v in zip(W, s)]
     # rule: z > 1 means "well above her usual spread"; map to 0/1 alert at that point
     rs = rule_scores(W)
     r = base(rs); [d.update(prob=1 / (1 + np.exp(-(v - 1) * 3))) for d, v in zip(r, rs)]
-    print(fmt("baseline: isolation rule (gps)", metrics(r, a.thr)))
+    runs = [("baseline: isolation rule (gps)", r)]
     for fs, feats in FEATURES.items():
-        print(fmt(f"baseline: logistic regression LOCO ({fs})", metrics(base(logreg_scores(W, feats)), a.thr)))
-    print()
+        runs.append((f"baseline: logistic regression LOCO ({fs})", base(logreg_scores(W, feats))))
+    n_base = len(runs)
     for f in sorted(glob.glob("results/*.jsonl")):
         recs = [json.loads(l) for l in open(f)]
         err = sum(r.get("prob") is None for r in recs)
-        print(fmt(os.path.basename(f)[:-6] + (f" ({err} err)" if err else ""), metrics(recs, a.thr)))
+        runs.append((os.path.basename(f)[:-6] + (f" ({err} err)" if err else ""), recs))
+    for i, (name, recs) in enumerate(runs):
+        if i == n_base:
+            print()
+        print(fmt(name, metrics_(recs)))
+
+    if a.boot > 0:
+        cows = sorted({w["cow"] for w in W})
+        res = bootstrap(runs, cows, metrics_, a.boot, a.seed)
+        print_bootstrap(res, runs[0][0], a.boot, len(cows))
 
 
 if __name__ == "__main__":
