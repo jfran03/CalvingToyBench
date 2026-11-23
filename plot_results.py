@@ -16,16 +16,18 @@ from sklearn.metrics import precision_recall_curve, roc_curve
 from score import FEATURES, logreg_scores, metrics, rule_scores
 
 # List prices in USD per million tokens (input, output), as of 2026-11. Update if prices change.
-PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.00, 10.00), "gpt-6-luna":(0.10,0.50), "gpt-6.2-sol": (2.00, 10.00), "jev-1.14":(0.042,0.0)}
+PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.00, 10.00), "gpt-6-luna":(0.10,0.50), "gpt-6.2-sol": (2.00, 10.00), "jev-1.14":(0.042,0.0), "gpt-6.2-astra":(8.00,40.00), "claude-opus-5-5":(4.00,20.00)}
 
 LLM_RUNS = [  # (label, results file, model id for pricing)
-    ("Claude Haiku 5.5", "results/harbor__anthropic_claude-haiku-5-5__both.jsonl", "claude-haiku-5-5"),
-    ("Claude Sonnet 5.5", "results/harbor__anthropic_claude-sonnet-5-5__both.jsonl", "claude-sonnet-5-5"),
-    ("GPT-6 Luna", "results/harbor__openai_gpt-6-luna__both.jsonl", "gpt-6-luna"),
-    ("GPT-6.2 Sol", "results/harbor__openai_gpt-6.2-sol__both.jsonl", "gpt-6.2-sol"),
-    ("TypeSafe Jev 1.14", "results/harbor__jev_jev-1.14.0__both.jsonl", "jev-1.14"),
-    ("CalvingDetection AE only", "results/cd__ae_only.jsonl", None),  # authors' pretrained models, not LLMs
-    ("CalvingDetection AE+RF", "results/cd__rf_pretrained.jsonl", None),
+    ("CalvingDetection AE only (Wang et al.)", "results/cd__ae_only.jsonl", None),  # authors' pretrained models, not LLMs
+    ("CalvingDetection AE+RF (Wang et al.)", "results/cd__rf_pretrained.jsonl", None),
+    ("Claude Haiku 5.5 (both)", "results/harbor__anthropic_claude-haiku-5-5__both.jsonl", "claude-haiku-5-5"),
+    ("Claude Sonnet 5.5 (both)", "results/harbor__anthropic_claude-sonnet-5-5__both.jsonl", "claude-sonnet-5-5"),
+    ("GPT-6 Luna (both)", "results/harbor__openai_gpt-6-luna__both.jsonl", "gpt-6-luna"),
+    ("GPT-6.2 Sol (both)", "results/harbor__openai_gpt-6.2-sol__both.jsonl", "gpt-6.2-sol"),
+    ("GPT-6.2 Astra (both)", "results/harbor__openai_gpt-6.2-astra__both.jsonl", "gpt-6.2-astra"),
+    ("Claude Opus 5.5 (both)", "results/harbor__anthropic_claude-opus--5-5__both.jsonl", "claude-opus-5-5"),
+    ("TypeSafe Jev 1.14 (both)", "results/harbor__jev_jev-1.14.0__both.jsonl", "jev-1.14"),
 ]
 
 # Chart ink (reference palette, light mode). Baselines are recessive grey; the LLMs carry colour.
@@ -33,13 +35,15 @@ SURFACE, INK, INK2, MUTED, GRID, AXIS = "#fcfcfb", "#0b0b0b", "#52514e", "#89878
 STYLE = {
     "Isolation rule (GPS)":       dict(color=INK2, ls="-"),
     "Logistic regression (both)": dict(color=MUTED, ls=(0, (4, 2))),
-    "Claude Haiku 5.5":           dict(color="#2a78d6", ls="-"),
-    "Claude Sonnet 5.5":          dict(color="#eb6834", ls="-"),
-    "GPT-6 Luna":                 dict(color="#2a9d62", ls="-"),
-    "GPT-6.2 Sol":                dict(color="#8a4fd0", ls="-"),
-    "TypeSafe Jev 1.14":          dict(color="#c9a227", ls="-"),
-    "CalvingDetection AE only":   dict(color="#17a2b8", ls=(0, (1, 1.5))),
-    "CalvingDetection AE+RF":     dict(color="#d6336c", ls=(0, (1, 1.5))),
+    "CalvingDetection AE only (Wang et al.)": dict(color="#17a2b8", ls=(0, (1, 1.5))),
+    "CalvingDetection AE+RF (Wang et al.)":   dict(color="#d6336c", ls=(0, (1, 1.5))),
+    "Claude Haiku 5.5 (both)":    dict(color="#2a78d6", ls="-"),
+    "Claude Sonnet 5.5 (both)":   dict(color="#eb6834", ls="-"),
+    "GPT-6 Luna (both)":          dict(color="#2a9d62", ls="-"),
+    "GPT-6.2 Sol (both)":         dict(color="#8a4fd0", ls="-"),
+    "GPT-6.2 Astra (both)":       dict(color="#7a4b2a", ls="-"),
+    "Claude Opus 5.5 (both)":     dict(color="#d4a017", ls="-"),
+    "TypeSafe Jev 1.14 (both)":   dict(color="#c9a227", ls="-"),
 }
 
 
@@ -51,10 +55,17 @@ def load_runs(W):
     runs = {"Isolation rule (GPS)": (rule, None)}
     for fs, feats in FEATURES.items():
         runs[f"Logistic regression ({fs})"] = (base(logreg_scores(W, feats)), None)
+    failed = {}  # label -> reason, for runs with no usable probabilities (e.g. every call errored)
     for label, path, model in LLM_RUNS:
-        if os.path.exists(path):
-            runs[label] = ([json.loads(l) for l in open(path)], model)
-    return runs
+        if not os.path.exists(path):
+            continue
+        recs = [json.loads(l) for l in open(path)]
+        if not any(r.get("prob") is not None for r in recs):
+            err = next((r["error"] for r in recs if r.get("error")), "no probabilities")
+            failed[label] = err.split(":")[0] + (" 404 (model id not found)" if "404" in err else "")
+            continue
+        runs[label] = (recs, model)
+    return runs, failed
 
 
 def cost_usd(recs, model):
@@ -94,7 +105,7 @@ def main():
     a = ap.parse_args()
     W = [json.loads(l) for l in open(a.windows)]
     prev = np.mean([w["label"] for w in W])
-    runs = load_runs(W)
+    runs, failed = load_runs(W)
     plotted = [k for k in STYLE if k in runs]
 
     plt.rcParams["font.family"] = ["Segoe UI", "DejaVu Sans", "sans-serif"]
@@ -157,7 +168,8 @@ def main():
             cell.get_text().set_color(INK2); cell.get_text().set_weight("bold"); cell.set_height(cell.get_height() * 1.5)
         if c == 0 and r > 0:
             cell.get_text().set_ha("left"); cell._loc = "left"; cell.PAD = 0.03
-    ax_t.set_title(f"Scores at alert threshold {a.thr} (same as python score.py --thr {a.thr})",
+    note = "".join(f" Not shown, all calls failed: {k} ({v})." for k, v in failed.items())
+    ax_t.set_title(f"Scores at alert threshold {a.thr} (same as python score.py --thr {a.thr}). both = GPS + accelerometer.{note}",
                    loc="left", fontsize=11, color=INK, pad=4)
 
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
