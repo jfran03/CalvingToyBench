@@ -26,7 +26,7 @@ LLM_RUNS = [  # (label, results file, model id for pricing)
     ("GPT-6 Luna (both)", "results/harbor__openai_gpt-6-luna__both.jsonl", "gpt-6-luna"),
     ("GPT-6.2 Sol (both)", "results/harbor__openai_gpt-6.2-sol__both.jsonl", "gpt-6.2-sol"),
     ("GPT-6.2 Astra (both)", "results/harbor__openai_gpt-6.2-astra__both.jsonl", "gpt-6.2-astra"),
-    ("Claude Opus 5.5 (both)", "results/harbor__anthropic_claude-opus--5-5__both.jsonl", "claude-opus-5-5"),
+    ("Claude Opus 5.5 (both)", "results/harbor__anthropic_claude-opus-5-5__both.jsonl", "claude-opus-5-5"),
     ("TypeSafe Jev 1.14 (both)", "results/harbor__jev_jev-1.14.0__both.jsonl", "jev-1.14"),
 ]
 
@@ -42,7 +42,7 @@ STYLE = {
     "GPT-6 Luna (both)":          dict(color="#2a9d62", ls="-"),
     "GPT-6.2 Sol (both)":         dict(color="#8a4fd0", ls="-"),
     "GPT-6.2 Astra (both)":       dict(color="#7a4b2a", ls="-"),
-    "Claude Opus 5.5 (both)":     dict(color="#d4a017", ls="-"),
+    "Claude Opus 5.5 (both)":     dict(color="#b5121b", ls="-"),
     "TypeSafe Jev 1.14 (both)":   dict(color="#c9a227", ls="-"),
 }
 
@@ -109,9 +109,9 @@ def main():
     plotted = [k for k in STYLE if k in runs]
 
     plt.rcParams["font.family"] = ["Segoe UI", "DejaVu Sans", "sans-serif"]
-    fig = plt.figure(figsize=(15, 11.8), facecolor=SURFACE)
-    gs = fig.add_gridspec(2, 3, height_ratios=[1, 0.85], hspace=0.30, wspace=0.26,
-                          left=0.05, right=0.98, top=0.86, bottom=0.02)
+    fig = plt.figure(figsize=(15, 13.4), facecolor=SURFACE)
+    gs = fig.add_gridspec(2, 3, height_ratios=[1, 1.0], hspace=0.24, wspace=0.26,
+                          left=0.05, right=0.98, top=0.85, bottom=0.01)
     ax_roc, ax_pr, ax_tr = (fig.add_subplot(gs[0, i]) for i in range(3))
 
     for name in plotted:
