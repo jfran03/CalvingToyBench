@@ -19,7 +19,7 @@ Task names are a hash of the window id, so nothing in a task name reveals the co
 """
 import argparse, hashlib, json, os, shutil
 
-from bench import build_prompt, build_prompt_binned
+from bench import build_prompt, build_prompt_binned, build_prompt_digest
 from prep import FEATURES
 
 TASK_TOML = """schema_version = "1.4"
@@ -116,7 +116,28 @@ def sliding_windows(windows, n):
     return out
 
 
-def export(windows, fs, out_root, sliding=0, suffix="_SW", binned=False):
+# Redesigned tasks (docs/task-redesign-runs.md). All use the cow's full past history (never the future).
+# variant -> (dataset suffix, prompt builder)
+VARIANTS = {
+    "dg":  ("_DG",  lambda w, f: build_prompt_digest(w, f)),
+    "dgc": ("_DGC", lambda w, f: build_prompt_digest(w, f, cues=True)),
+    "dgd": ("_DGD", lambda w, f: build_prompt_digest(w, f, cues=True, decompose=True)),
+    "dgh": ("_DGH", lambda w, f: build_prompt_digest(w, f, cues=True, herd=_herd()[w["id"]])),
+    "dga": ("_DGA", lambda w, f: build_prompt_digest(w, f, cues=True, aligned=True)),
+    "dgad": ("_DGAD", lambda w, f: build_prompt_digest(w, f, cues=True, aligned=True, decompose=True)),
+    "dgha": ("_DGHA", lambda w, f: build_prompt_digest(w, f, cues=True, herd=_herd()[w["id"]], aligned=True)),
+}
+_HERD = {}
+
+
+def _herd():
+    """herd_context.json (built by herd_context.py from the raw dataset), loaded on first use."""
+    if not _HERD:
+        _HERD.update(json.load(open("herd_context.json")))
+    return _HERD
+
+
+def export(windows, fs, out_root, sliding=0, suffix="_SW", binned=False, builder=None):
     feats = FEATURES[fs]
     name_ds = fs + (suffix if sliding else "")
     if sliding:
@@ -128,8 +149,9 @@ def export(windows, fs, out_root, sliding=0, suffix="_SW", binned=False):
         name = task_name(w["id"])
         assert name not in index, f"hash collision on {name}"
         t = os.path.join(ds, name)
-        write(os.path.join(t, "instruction.md"), (build_prompt_binned(w, feats) if binned
-                                                                  else build_prompt(w, feats, lookback=len(w["hours"]))) + "\n")
+        prompt = (builder(w, feats) if builder else build_prompt_binned(w, feats) if binned
+                  else build_prompt(w, feats, lookback=len(w["hours"])))
+        write(os.path.join(t, "instruction.md"), prompt + "\n")
         write(os.path.join(t, "task.toml"), TASK_TOML.format(features=name_ds))
         write(os.path.join(t, "tests", "test.sh"), TEST_SH, executable=True)
         write(os.path.join(t, "tests", "verify.py"), VERIFY_PY)
@@ -153,13 +175,17 @@ def main():
     ap.add_argument("--full", action="store_true",
                     help="expanding-window tasks (dataset name gets _FW): history = ALL prior windows of the same cow, "
                          "so window k holds windows 1..k (up to 336h), resetting at each new cow")
+    ap.add_argument("--variant", choices=VARIANTS, help="redesigned task: digest prompts over the full past history")
     a = ap.parse_args()
     sliding, suffix = (FULL_N, "_FW") if a.full else (a.sliding, "_SW")
+    builder = None
+    if a.variant:
+        (suffix, builder), sliding = VARIANTS[a.variant], FULL_N
     if a.bins:  # needs each window's full per-cow history, then bins it inside the prompt
         sliding, suffix = FULL_N, "_PB"
     windows = [json.loads(l) for l in open(a.windows)]
     for fs in [a.features] if a.features else FEATURES:
-        export(windows, fs, a.out, sliding, suffix, a.bins)
+        export(windows, fs, a.out, sliding, suffix, a.bins, builder)
 
 
 if __name__ == "__main__":

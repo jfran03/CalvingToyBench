@@ -12,7 +12,7 @@ come from harbor_tasks/<features>.index.json (task name -> window), never from t
 import argparse, glob, json, os
 
 
-def collect(job_dir, tasks_root="harbor_tasks"):
+def collect(job_dir, tasks_root="harbor_tasks", tag=""):
     cfg = json.load(open(os.path.join(job_dir, "config.json")))
     features = os.path.basename(os.path.normpath(cfg["datasets"][0]["path"]))
     model = cfg["agents"][0]["model_name"] or cfg["agents"][0]["name"]
@@ -44,7 +44,7 @@ def collect(job_dir, tasks_root="harbor_tasks"):
             best[w["id"]] = rec
 
     os.makedirs("results", exist_ok=True)
-    out = f"results/harbor__{model.replace('/', '_')}__{features}.jsonl"
+    out = f"results/harbor__{model.replace('/', '_')}__{features}{tag}.jsonl"  # tag: e.g. _x3 for --samples 3
     with open(out, "w") as fh:
         for rec in sorted(best.values(), key=lambda x: x["id"]):
             fh.write(json.dumps(rec) + "\n")
@@ -57,5 +57,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("job_dir")
     ap.add_argument("--tasks-root", default="harbor_tasks")
+    ap.add_argument("--tag", default="", help="suffix for the results file, e.g. _x3")
     a = ap.parse_args()
-    collect(a.job_dir, a.tasks_root)
+    collect(a.job_dir, a.tasks_root, a.tag)

@@ -44,28 +44,34 @@ def main():
     ap.add_argument("--sw", action="store_true", help="use the sliding-window dataset (<features>_SW)")
     ap.add_argument("--fw", action="store_true", help="use the full/expanding-window dataset (<features>_FW)")
     ap.add_argument("--pb", action="store_true", help="use the binned dataset (<features>_PB): 48h raw + 24h prior bins")
+    ap.add_argument("--variant", choices=["dg", "dgc", "dgd", "dgh", "dga", "dgha", "dgad"], help="redesigned digest task (<features>_DG/_DGC/_DGD/_DGH)")
+    ap.add_argument("--samples", type=int, default=1, help="ask the model k times per window and average (job/results get _x<k>)")
     ap.add_argument("--limit", type=int, default=0, help="only N tasks (smoke test)")
     ap.add_argument("--concurrency", type=int, default=4)
     a = ap.parse_args()
     if not (a.model or a.oracle):
         ap.error("pass --model or --oracle")
 
-    if a.sw + a.fw + a.pb > 1:
-        ap.error("pick one of --sw / --fw / --pb")
+    if a.sw + a.fw + a.pb + bool(a.variant) > 1:
+        ap.error("pick one of --sw / --fw / --pb / --variant")
     extra = ["--sliding", "10"] if a.sw else ["--full"] if a.fw else ["--bins"] if a.pb else []
     base = a.features
-    if a.sw or a.fw or a.pb:
+    if a.variant:
+        extra = ["--variant", a.variant]
+        a.features += "_" + a.variant.upper()
+    elif a.sw or a.fw or a.pb:
         a.features += "_SW" if a.sw else "_FW" if a.fw else "_PB"  # dataset folder name
     if not os.path.isdir(os.path.join(HERE, "harbor_tasks", a.features)):
         subprocess.run([sys.executable, "harbor_export.py", "--features", base] + extra, cwd=HERE, check=True)
 
     slug = "oracle" if a.oracle else re.sub(r"[^A-Za-z0-9._-]", "_", a.model)
-    job = f"{slug}__{a.features}" + (f"__limit{a.limit}" if a.limit else "")
+    tag = f"_x{a.samples}" if a.samples > 1 else ""
+    job = f"{slug}__{a.features}{tag}" + (f"__limit{a.limit}" if a.limit else "")
     job_dir = os.path.join("jobs", job)
     # The agent runs on this machine (not in the sandbox) and reads keys from its own environment.
     # Load .env here rather than via `harbor run --env-file`, because `harbor job resume` has no such flag.
     env = {**load_dotenv(os.path.join(HERE, ".env")), **os.environ,
-           "PYTHONPATH": HERE + os.pathsep + os.environ.get("PYTHONPATH", "")}
+           "PYTHONPATH": HERE + os.pathsep + os.environ.get("PYTHONPATH", ""), "ZS_SAMPLES": str(a.samples)}
 
     if os.path.exists(os.path.join(HERE, job_dir, "config.json")):
         print(f"resuming {job_dir}")
@@ -79,7 +85,7 @@ def main():
     print(" ".join(cmd))
     subprocess.run(cmd, cwd=HERE, env=env, check=True)
     os.chdir(HERE)
-    collect(job_dir)
+    collect(job_dir, tag=tag)
 
 
 if __name__ == "__main__":

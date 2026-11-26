@@ -48,9 +48,60 @@ def logreg_scores(W, feats):
     return list(s)
 
 
+REFRACTORY_H = 0  # set by --refractory; 0 = every window at/above the threshold alerts (original policy)
+
+
+def alerts(rc, t):
+    """Which of one cow's windows raise an alert at threshold t. rc must be in time order.
+    With REFRACTORY_H > 0, an alert silences that cow's later windows for that many hours (a rancher who was
+    just alerted is already watching her). Causal: depends only on earlier windows' scores."""
+    out, last = [], -1e9
+    for i, r in enumerate(rc):
+        a = r["prob"] >= t and (REFRACTORY_H == 0 or i * STEP_H - last >= REFRACTORY_H)
+        if a:
+            last = i * STEP_H
+        out.append(a)
+    return out
+
+
+def by_cow_sorted(recs):
+    """{cow: its windows in time order}. Window ids end in the decision time (YYYYMMDDTHH), so they sort by time."""
+    d = {}
+    for r in recs:
+        d.setdefault(r["cow"], []).append(r)
+    return {c: sorted(v, key=lambda r: r["id"].split("_", 1)[1]) for c, v in d.items()}
+
+
+_CURVES = {}
+
+
+def _fa_curve(rc):
+    """One cow's false-alarm count as a step function of the threshold. Her alerts can only change at her own
+    distinct scores, so the count at any t equals the count at her smallest score >= t. Cached, because the
+    leave-one-cow-out folds and bootstrap replicates reuse the same cows."""
+    key = (REFRACTORY_H, tuple((r["prob"], r["label"]) for r in rc))
+    if key not in _CURVES:
+        vals = np.unique([r["prob"] for r in rc])
+        _CURVES[key] = (vals, np.array([sum(a and not r["label"] for r, a in zip(rc, alerts(rc, v))) for v in vals]))
+    return _CURVES[key]
+
+
+def _fa_at(curve, ts):
+    vals, fa = curve
+    i = np.searchsorted(vals, ts, side="left")
+    return np.where(i < len(vals), fa[np.minimum(i, len(vals) - 1)], 0)
+
+
 def pick_threshold(recs, fa_hi):
     """Lowest probability threshold whose false alarms stay <= fa_hi per cow-week on these recs.
     inf (never alert) if even the highest score exceeds the budget."""
+    if REFRACTORY_H:
+        cows = by_cow_sorted(recs)
+        weeks = sum(not r["label"] for r in recs) * STEP_H / 168
+        cands = np.unique([r["prob"] for r in recs])  # ascending: first one within budget is the lowest
+        fa = sum(_fa_at(_fa_curve(rc), cands) for rc in cows.values())  # exact, not assuming monotonicity
+        ok = np.where(fa / weeks <= fa_hi)[0]
+        return float(cands[ok[0]]) if len(ok) else float("inf")
     negs = np.sort([r["prob"] for r in recs if not r["label"]])
     weeks = len(negs) * STEP_H / 168
     cands = np.unique([r["prob"] for r in recs])  # ascending; FA is non-increasing in the threshold
@@ -82,15 +133,15 @@ def metrics(recs, thr):
     out = {"n": len(recs)}
     if len(set(y)) == 2:
         out["auroc"] = roc_auc_score(y, p); out["auprc"] = average_precision_score(y, p)
-    cows = sorted({r["cow"] for r in recs}); det, leads, fa, neg_h = 0, [], 0, 0
+    per_cow = by_cow_sorted(recs); cows = sorted(per_cow); det, leads, fa, neg_h = 0, [], 0, 0
     for c in cows:
-        rc = [r for r in recs if r["cow"] == c]
+        rc = per_cow[c]
         t = thr[c] if isinstance(thr, dict) else thr
-        hits = [r for r in rc if r["label"] and r["prob"] >= t]
+        al = alerts(rc, t)
+        hits = [r for r, a in zip(rc, al) if r["label"] and a]
         if hits:
             det += 1; leads.append(max(r["hours_to_calving"] for r in hits))
-        negs = [r for r in rc if not r["label"]]
-        fa += sum(r["prob"] >= t for r in negs); neg_h += len(negs) * STEP_H
+        fa += sum(a for r, a in zip(rc, al) if not r["label"]); neg_h += sum(not r["label"] for r in rc) * STEP_H
     out["detected"] = f"{det}/{len(cows)}"
     out["lead_h"] = float(np.median(leads)) if leads else None
     out["fa_per_cow_week"] = fa / (neg_h / 168) if neg_h else None
@@ -146,7 +197,12 @@ def main():
     ap.add_argument("--thr", type=float, default=None, help="fixed threshold; default = tune to the FA budget")
     ap.add_argument("--fa-lo", type=float, default=0.5)
     ap.add_argument("--fa-hi", type=float, default=1.0)
+    ap.add_argument("--refractory", type=int, default=0, metavar="H",
+                    help="after an alert, silence that cow for H hours (e.g. 24). Default 0 = original policy")
+    ap.add_argument("--only", default="", help="comma-separated substrings: only score results files matching one")
     a = ap.parse_args()
+    global REFRACTORY_H
+    REFRACTORY_H = a.refractory
     W = [json.loads(l) for l in open(a.windows)]
     prev = np.mean([w["label"] for w in W])
     mode = (f"Alert threshold {a.thr}" if a.thr is not None else
@@ -165,6 +221,8 @@ def main():
         runs.append((f"baseline: logistic regression LOCO ({fs})", base(logreg_scores(W, feats))))
     n_base = len(runs)
     for f in sorted(glob.glob("results/*.jsonl")):
+        if a.only and not any(k in f for k in a.only.split(",")):
+            continue
         recs = [json.loads(l) for l in open(f)]
         err = sum(r.get("prob") is None for r in recs)
         runs.append((os.path.basename(f)[:-6] + (f" ({err} err)" if err else ""), recs))

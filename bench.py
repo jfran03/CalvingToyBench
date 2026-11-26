@@ -135,6 +135,116 @@ Reply with JSON only, exactly this shape:
 {{"probability": <number 0 to 1>, "reason": "<at most 25 words>"}}"""
 
 
+# --- Digest prompts (the _DG* datasets, docs/task-redesign-runs.md) -------------------------------
+# LLMs read long columns of numbers poorly, and the per-hour signal is weak. The signal that does exist
+# is in summaries over several hours (24h travel, isolation peaks, flattened activity) relative to the cow's
+# own normal. So we compute those summaries in code and show them as a short table, plus only the last
+# 12 raw hours. Everything is computed from rows with rel_h <= 0 (the past), so nothing looks forward.
+
+DIGEST_RAW_H = 12
+DIGEST_PERIODS = [("last 6h", -5, 0), ("last 12h", -11, 0), ("last 24h", -23, 0), ("24-48h ago", -47, -24),
+                  ("48-72h ago", -71, -48), ("72-96h ago", -95, -72)]
+DIGEST_MIN_H = 4  # a period needs at least this many hours with data
+DIGEST_REF = (-143, -24)  # "her normal": up to 5 days before the last 24h
+
+CUES = """What is known about cows close to calving (use it as evidence, not as a rule):
+- In the last day or so before calving, many cows travel less than usual (lower dist_moved_m over 24h).
+- Many cows separate from the herd shortly before calving, so distance to herdmates rises well above her own normal. Isolation is strongest in the hours just before and after the birth.
+- Activity often loses its usual high peaks (lower maximum hourly activity) because grazing bouts are replaced by short restless periods and more lying.
+- No single sign is reliable. Several signs together, each clearly beyond her own normal, are stronger evidence than one extreme value. Normal day-to-day variation (for example a long trek to water) is common.
+"""
+
+SCORE_INSTR = """Give your probability with two decimals and use the whole 0-1 range: about 1 in 10 moments like this one is followed by calving within 24 hours, so most cows should get a low number and only clear multi-sign cases a high one."""
+
+
+def _period_stats(hours, c, lo, hi):
+    v = [h[c] for h in hours if lo <= h["rel_h"] <= hi and h[c] is not None]
+    return (sum(v) / len(v), max(v), len(v)) if len(v) >= DIGEST_MIN_H else None
+
+
+ALIGNED_Q = ("Question: Is this cow in the calving window right now? Count it as YES if she gave birth within the "
+             "last 6 hours or will give birth within the next 24 hours. Count it as NO if birth is more than 24 hours "
+             "away, AND also NO if she already gave birth more than 6 hours ago. A cow that calved earlier stays apart "
+             "with her calf and moves little for a day or more, so a long, steady isolation that began well before "
+             "the last few hours points to an earlier birth (NO), while a fresh change in the last hours points to YES.")
+
+
+def build_prompt_digest(w, feats, cues=False, decompose=False, herd=None, aligned=False):
+    """Computed summary table + last 12 raw hours. w["hours"] is the cow's history so far (rel_h 0 = now).
+    cues: add known pre-calving behaviour. decompose: ask for per-sign ratings before the probability.
+    herd: this window's entry from herd_context.json (the other cows over the same past hours), or None."""
+    hours = w["hours"]
+    defs = "\n".join(f"- {c}: {UNITS[c]}" for c in feats)
+    base = "\n".join(f"- {c}: median {w['baseline'][c]['median']:.1f}, 90th pct {w['baseline'][c]['p90']:.1f}"
+                     for c in feats if c in w["baseline"])
+    # her normal = hourly mean over up to 5 days before the last 24h (rel_h -143..-24), past data only
+    ref = {c: _period_stats(hours, c, *DIGEST_REF) for c in feats}
+    ref_h = max((r[2] for r in ref.values() if r), default=0)
+    tab = ["period," + ",".join(f"{c}_mean,{c}_vs_normal,{c}_max" for c in feats)]
+    tab.append("her normal," + ",".join(f"{ref[c][0]:.1f},1.00,{ref[c][1]:.1f}" if ref[c] else ",," for c in feats))
+    for name, lo, hi in DIGEST_PERIODS:
+        cells, any_ = [name], False
+        for c in feats:
+            s = _period_stats(hours, c, lo, hi)
+            if s is None:
+                cells += ["", "", ""]
+            else:
+                any_ = True
+                ratio = f"{s[0] / ref[c][0]:.2f}" if ref[c] and ref[c][0] > 0 else ""
+                cells += [f"{s[0]:.1f}", ratio, f"{s[1]:.1f}"]
+        if any_:
+            tab.append(",".join(cells))
+    cols = ["rel_h", "hour_local"] + feats
+    raw = [",".join(cols)] + [",".join("" if h[c] is None else str(h[c]) for c in cols)
+                              for h in hours if h["rel_h"] > -DIGEST_RAW_H]
+    if decompose:
+        reply = """First rate each sign 0-10 against her own normal (0 = completely normal for her, 10 = extreme change), then give the probability.
+
+Reply with JSON only, exactly this shape:
+{"isolation": <0-10>, "reduced_travel": <0-10>, "activity_change": <0-10>, "probability": <number 0 to 1>, "reason": "<at most 25 words>"}"""
+    else:
+        reply = """Reply with JSON only, exactly this shape:
+{"probability": <number 0 to 1>, "reason": "<at most 25 words>"}"""
+    parts = [
+        "A pregnant multiparous Brangus beef cow is grazing a large desert rangeland pasture with about 15 other "
+        "collared cows. She is due to calve sometime in the coming weeks, but the exact date is unknown.",
+        f"You get a summary of her collar data computed for you, then her last {DIGEST_RAW_H} raw hourly rows. "
+        'All of it is from the past: "now" is the end of the data.',
+        f"Columns:\n{defs}",
+        f"Her own typical values over the preceding 5 days (hourly):\n{base}",
+        "SUMMARY by period, counted back from now. <col>_mean is the hourly mean over the period and <col>_max "
+        "the largest hourly value in it. <col>_vs_normal is the period mean divided by her normal: her own hourly "
+        f"mean over the {ref_h} hours before the last 24 (1.00 = as usual, 2.00 = double, 0.50 = half). Periods "
+        "with too little data are left out.\n" + "\n".join(tab),
+        f"LAST {DIGEST_RAW_H} HOURS, hourly. rel_h=0 is now; hour_local is local clock hour (0-23). "
+        "Blank cells are missing data.\n" + "\n".join(raw),
+    ]
+    if herd:
+        htab = ["period," + ",".join(f"herd_{c}_mean,her_{c}_vs_herd" for c in feats)]
+        for name, lo, hi in DIGEST_PERIODS[:3]:
+            cells = [name]
+            for c in feats:
+                hm, own = (herd.get(name) or {}).get(c), _period_stats(hours, c, lo, hi)
+                if hm is None:
+                    cells += ["", ""]
+                else:
+                    cells += [f"{hm['median']:.1f}", f"{own[0] / hm['median']:.2f}" if own and hm["median"] > 0 else ""]
+            htab.append(",".join(cells))
+        n = max(((herd.get("last 24h") or {}).get(c) or {}).get("n", 0) for c in feats)
+        parts.insert(5, "HERD over the same hours: herd_<col>_mean is the median, across the other collared cows "
+                        f"(about {n}), of each cow's hourly mean over the period. her_<col>_vs_herd is her own mean "
+                        "divided by that (1.00 = like the herd). A change the whole herd shows at once (for example "
+                        "everyone walking less on a hot day) is weather or management, not a calving sign.\n"
+                        + "\n".join(htab))
+    if cues:
+        parts.append(CUES.strip())
+    parts.append(ALIGNED_Q if aligned else "Question: Is this cow calving now, or will she calve within the next 24 hours?")
+    if cues:
+        parts.append(SCORE_INSTR)
+    parts.append(reply)
+    return "\n\n".join(parts)
+
+
 def parse(text):
     m = re.search(r"\{.*\}", text, re.S)
     if not m:

@@ -11,7 +11,7 @@ Run (from the project root, see harbor_run.py):
   harbor run -p harbor_tasks/both -a harbor_agent:ZeroShotAgent -m anthropic/claude-sonnet-5-5 --env-file .env
 Supported providers: anthropic, openai, jev (TypeSafe), mock (offline, no key, tests the plumbing).
 """
-import asyncio, json, tempfile
+import asyncio, json, os, tempfile
 from pathlib import Path
 
 import requests
@@ -42,7 +42,20 @@ class ZeroShotAgent(BaseAgent):
             raise ValueError(f"-m must be <provider>/<model> with provider in {PROVIDERS}, got {self.model_name!r}")
 
         # strip(): instruction.md ends with a newline that bench.py's prompt doesn't have
-        answer, log = await asyncio.to_thread(self._ask, provider, model, instruction.strip())
+        # ZS_SAMPLES=k (set by harbor_run.py --samples k): ask k independent times and average the probabilities
+        # (self-consistency; reduces per-call noise). Default 1 = the original single call.
+        k = int(os.environ.get("ZS_SAMPLES", "1"))
+        runs = await asyncio.gather(*[asyncio.to_thread(self._ask, provider, model, instruction.strip()) for _ in range(k)])
+        if k == 1:
+            answer, log = runs[0]
+        else:
+            ps = [a["probability"] for a, _ in runs if a["probability"] is not None]
+            answer = ({"probability": sum(ps) / len(ps), "reason": runs[0][0]["reason"], "samples": ps} if ps
+                      else runs[0][0])
+            log = {"samples": [l for _, l in runs], "attempts": sum(l["attempts"] for _, l in runs),
+                   "error": next((l.get("error") for _, l in runs if l.get("error")), None),
+                   "usage": {key: sum((l.get("usage") or {}).get(key) or 0 for _, l in runs)
+                             for key in ("input_tokens", "output_tokens")}}
 
         usage = log.get("usage") or {}
         context.n_input_tokens = usage.get("input_tokens")

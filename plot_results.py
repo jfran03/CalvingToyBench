@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import precision_recall_curve, roc_curve
 
+import score
 from score import FEATURES, bootstrap, evaluate, logreg_scores, metrics, rule_scores
 
 # List prices in USD per million tokens (input, output), as of 2026-11. Update if prices change.
@@ -37,6 +38,18 @@ LLM_RUNS = [  # (label, results file, model id for pricing)
     ("TypeSafe Jev 1.14 (both)", "results/harbor__jev_jev-1.14.0__both.jsonl", "jev-1.14"),
 ]
 
+# The five task-redesign runs (docs/task-redesign-runs.md), all Claude Haiku 5.5. Shown with --set redesign.
+REDESIGN_RUNS = [
+    ("Run 1 Haiku DG: digest", "results/harbor__anthropic_claude-haiku-5-5__both_DG.jsonl", "claude-haiku-5-5"),
+    ("Run 2 Haiku DGC: digest + cues", "results/harbor__anthropic_claude-haiku-5-5__both_DGC.jsonl", "claude-haiku-5-5"),
+    ("Run 3 Haiku DGH: + herd", "results/harbor__anthropic_claude-haiku-5-5__both_DGH.jsonl", "claude-haiku-5-5"),
+    ("Run 4 Haiku DGA: + label-aligned question", "results/harbor__anthropic_claude-haiku-5-5__both_DGA.jsonl", "claude-haiku-5-5"),
+    ("Run 5 Haiku DGAD: + per-sign ratings", "results/harbor__anthropic_claude-haiku-5-5__both_DGAD.jsonl", "claude-haiku-5-5"),
+    ("Run 6 Haiku DGA x3: 3 samples avg", "results/harbor__anthropic_claude-haiku-5-5__both_DGA_x3.jsonl", "claude-haiku-5-5"),
+]
+REDESIGN_KEEP = {"Isolation rule (GPS)", "Logistic regression (both)", "CalvingDetection AE only (Wang et al.)",
+                 "CalvingDetection AE+RF (Wang et al.)", "Claude Haiku 5.5 (both)", "Claude Opus 5.5 (both)"}
+
 # Chart ink (reference palette, light mode). Baselines are recessive grey; the LLMs carry colour.
 SURFACE, INK, INK2, MUTED, GRID, AXIS = "#fcfcfb", "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7"
 STYLE = {
@@ -56,10 +69,16 @@ STYLE = {
     "GPT-6.2 Sol (both)":         dict(color="#8a4fd0", ls="-"),
     "GPT-6.2 Astra (both)":       dict(color="#7a4b2a", ls="-"),
     "TypeSafe Jev 1.14 (both)":   dict(color="#c9a227", ls="-"),
+    "Run 1 Haiku DG: digest":                    dict(color="#9ec5f0", ls="-"),
+    "Run 2 Haiku DGC: digest + cues":            dict(color="#6aa5e6", ls="-"),
+    "Run 3 Haiku DGH: + herd":                   dict(color="#2a9d62", ls=(0, (5, 2))),
+    "Run 4 Haiku DGA: + label-aligned question": dict(color="#0b3d91", ls="-"),
+    "Run 5 Haiku DGAD: + per-sign ratings":      dict(color="#8a4fd0", ls="-"),
+    "Run 6 Haiku DGA x3: 3 samples avg": dict(color="#b5121b", ls=(0, (5, 2))),
 }
 
 
-def load_runs(W):
+def load_runs(W, which="all"):
     base = lambda s: [dict(id=w["id"], cow=w["cow"], label=w["label"],
                            hours_to_calving=w["hours_to_calving"], prob=float(v)) for w, v in zip(W, s)]
     rs = rule_scores(W)  # same sigmoid as score.py so the table's thresholded columns match it
@@ -68,7 +87,7 @@ def load_runs(W):
     for fs, feats in FEATURES.items():
         runs[f"Logistic regression ({fs})"] = (base(logreg_scores(W, feats)), None)
     failed = {}  # label -> reason, for runs with no usable probabilities (e.g. every call errored)
-    for label, path, model in LLM_RUNS:
+    for label, path, model in (LLM_RUNS + REDESIGN_RUNS if which == "redesign" else LLM_RUNS):
         if not os.path.exists(path):
             continue
         recs = [json.loads(l) for l in open(path)]
@@ -77,6 +96,8 @@ def load_runs(W):
             failed[label] = err.split(":")[0] + (" 404 (model id not found)" if "404" in err else "")
             continue
         runs[label] = (recs, model)
+    if which == "redesign":
+        runs = {k: v for k, v in runs.items() if k in REDESIGN_KEEP or k.startswith("Run ")}
     return runs, failed
 
 
@@ -118,10 +139,13 @@ def main():
     ap.add_argument("--boot", type=int, default=1000, help="cow-level bootstrap resamples for the table CIs (0 = skip)")
     ap.add_argument("--seed", type=int, default=0, help="bootstrap seed")
     ap.add_argument("--out", default="figures/comparison.png")
+    ap.add_argument("--set", default="all", choices=["all", "redesign"], help="redesign = the 5 task-redesign runs vs references")
+    ap.add_argument("--refractory", type=int, default=0, metavar="H", help="score.py --refractory: silence a cow H hours after an alert")
     a = ap.parse_args()
+    score.REFRACTORY_H = a.refractory
     W = [json.loads(l) for l in open(a.windows)]
     prev = np.mean([w["label"] for w in W])
-    runs, failed = load_runs(W)
+    runs, failed = load_runs(W, a.set)
     plotted = [k for k in STYLE if k in runs]
 
     plt.rcParams["font.family"] = ["Segoe UI", "DejaVu Sans", "sans-serif"]
@@ -158,7 +182,8 @@ def main():
     h, l = ax_roc.get_legend_handles_labels()
     fig.legend(h, l, loc="upper left", bbox_to_anchor=(0.05, 0.945), ncol=5, frameon=False, fontsize=9,
                labelcolor=INK2, handlelength=2.6)
-    fig.text(0.05, 0.972, "Zero-shot LLMs vs baselines and the authors' pretrained models: calving alerts from collar data",
+    fig.text(0.05, 0.972, ("Task redesign, 6 Claude Haiku runs vs the original task and references" if a.set == "redesign" else
+                           "Zero-shot LLMs vs baselines and the authors' pretrained models: calving alerts from collar data"),
              fontsize=14, color=INK, weight="bold")
     fig.text(0.98, 0.972, f"735 windows, 15 cows, {prev:.0%} positive. Baselines leave-one-cow-out.",
              fontsize=9, color=MUTED, ha="right")
@@ -203,7 +228,8 @@ def main():
     note = "".join(f" Not shown, all calls failed: {k} ({v})." for k, v in failed.items())
     head = (f"Scores at alert threshold {a.thr} (same as python score.py --thr {a.thr})." if a.thr is not None else
             f"Scores with each model's threshold tuned leave-one-cow-out to {a.fa_lo:g}-{a.fa_hi:g} false alarms per cow-week "
-            f"(* = realised rate outside that range).")
+            f"(* = realised rate outside that range).") + (
+            f" Alert policy: after an alert, that cow is silenced for {a.refractory} h." if a.refractory else "")
     ci_note = (f" CIs: {a.boot} bootstrap resamples of the 15 cows (windows from a cow stay together)." if boot else "")
     ax_t.set_title(f"{head}\nboth = GPS + accelerometer.{ci_note}{note}", loc="left", fontsize=10.5, color=INK, pad=4)
 
