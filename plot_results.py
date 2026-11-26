@@ -26,7 +26,9 @@ LLM_RUNS = [  # (label, results file, model id for pricing)
     ("Claude Haiku 5.5 (both)", "results/harbor__anthropic_claude-haiku-5-5__both.jsonl", "claude-haiku-5-5"),
     ("Claude Haiku 5.5 Slide_Win (both)", "results/harbor__anthropic_claude-haiku-5-5__both_SW.jsonl", "claude-haiku-5-5"),
     ("Claude Haiku 5.5 Full_Win (both)", "results/harbor__anthropic_claude-haiku-5-5__both_FW.jsonl", "claude-haiku-5-5"),
+    ("Claude Haiku 5.5 Prior_Bins (both)", "results/harbor__anthropic_claude-haiku-5-5__both_PB.jsonl", "claude-haiku-5-5"),
     ("Claude Sonnet 5.5 (both)", "results/harbor__anthropic_claude-sonnet-5-5__both.jsonl", "claude-sonnet-5-5"),
+    ("Claude Sonnet 5.5 Prior_Bins (both)", "results/harbor__anthropic_claude-sonnet-5-5__both_PB.jsonl", "claude-sonnet-5-5"),
     ("Claude Opus 5.5 (both)", "results/harbor__anthropic_claude-opus-5-5__both.jsonl", "claude-opus-5-5"),
     ("GPT-6 Luna (both)", "results/harbor__openai_gpt-6-luna__both.jsonl", "gpt-6-luna"),
     ("GPT-6 Luna Slide_Win (both)", "results/harbor__openai_gpt-6-luna__both_SW.jsonl", "gpt-6-luna"),
@@ -45,6 +47,8 @@ STYLE = {
     "Claude Haiku 5.5 (both)":    dict(color="#2a78d6", ls="-"),
     "Claude Haiku 5.5 Slide_Win (both)": dict(color="#2a78d6", ls=(0, (5, 2))),  # same blue as Haiku, dashed
     "Claude Haiku 5.5 Full_Win (both)": dict(color="#2a78d6", ls=(0, (1, 1.5))),  # same blue as Haiku, dotted
+    "Claude Haiku 5.5 Prior_Bins (both)": dict(color="#2a78d6", ls=(0, (3, 1, 1, 1))),  # Haiku blue, dash-dot
+    "Claude Sonnet 5.5 Prior_Bins (both)": dict(color="#eb6834", ls=(0, (3, 1, 1, 1))),  # Sonnet orange, dash-dot
     "Claude Sonnet 5.5 (both)":   dict(color="#eb6834", ls="-"),
     "Claude Opus 5.5 (both)":     dict(color="#b5121b", ls="-"),
     "GPT-6 Luna (both)":          dict(color="#2a9d62", ls="-"),
