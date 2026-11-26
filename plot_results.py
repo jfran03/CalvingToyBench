@@ -24,9 +24,12 @@ LLM_RUNS = [  # (label, results file, model id for pricing)
     ("CalvingDetection AE only (Wang et al.)", "results/cd__ae_only.jsonl", None),  # authors' pretrained models, not LLMs
     ("CalvingDetection AE+RF (Wang et al.)", "results/cd__rf_pretrained.jsonl", None),
     ("Claude Haiku 5.5 (both)", "results/harbor__anthropic_claude-haiku-5-5__both.jsonl", "claude-haiku-5-5"),
+    ("Claude Haiku 5.5 Slide_Win (both)", "results/harbor__anthropic_claude-haiku-5-5__both_SW.jsonl", "claude-haiku-5-5"),
+    ("Claude Haiku 5.5 Full_Win (both)", "results/harbor__anthropic_claude-haiku-5-5__both_FW.jsonl", "claude-haiku-5-5"),
     ("Claude Sonnet 5.5 (both)", "results/harbor__anthropic_claude-sonnet-5-5__both.jsonl", "claude-sonnet-5-5"),
     ("Claude Opus 5.5 (both)", "results/harbor__anthropic_claude-opus-5-5__both.jsonl", "claude-opus-5-5"),
     ("GPT-6 Luna (both)", "results/harbor__openai_gpt-6-luna__both.jsonl", "gpt-6-luna"),
+    ("GPT-6 Luna Slide_Win (both)", "results/harbor__openai_gpt-6-luna__both_SW.jsonl", "gpt-6-luna"),
     ("GPT-6.2 Sol (both)", "results/harbor__openai_gpt-6.2-sol__both.jsonl", "gpt-6.2-sol"),
     ("GPT-6.2 Astra (both)", "results/harbor__openai_gpt-6.2-astra__both.jsonl", "gpt-6.2-astra"),
     ("TypeSafe Jev 1.14 (both)", "results/harbor__jev_jev-1.14.0__both.jsonl", "jev-1.14"),
@@ -40,9 +43,12 @@ STYLE = {
     "CalvingDetection AE only (Wang et al.)": dict(color="#17a2b8", ls=(0, (1, 1.5))),
     "CalvingDetection AE+RF (Wang et al.)":   dict(color="#d6336c", ls=(0, (1, 1.5))),
     "Claude Haiku 5.5 (both)":    dict(color="#2a78d6", ls="-"),
+    "Claude Haiku 5.5 Slide_Win (both)": dict(color="#2a78d6", ls=(0, (5, 2))),  # same blue as Haiku, dashed
+    "Claude Haiku 5.5 Full_Win (both)": dict(color="#2a78d6", ls=(0, (1, 1.5))),  # same blue as Haiku, dotted
     "Claude Sonnet 5.5 (both)":   dict(color="#eb6834", ls="-"),
     "Claude Opus 5.5 (both)":     dict(color="#b5121b", ls="-"),
     "GPT-6 Luna (both)":          dict(color="#2a9d62", ls="-"),
+    "GPT-6 Luna Slide_Win (both)": dict(color="#2a9d62", ls=(0, (5, 2))),  # same green as Luna, dashed
     "GPT-6.2 Sol (both)":         dict(color="#8a4fd0", ls="-"),
     "GPT-6.2 Astra (both)":       dict(color="#7a4b2a", ls="-"),
     "TypeSafe Jev 1.14 (both)":   dict(color="#c9a227", ls="-"),

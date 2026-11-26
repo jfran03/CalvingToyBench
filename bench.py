@@ -28,7 +28,8 @@ SYSTEM = ("You are an expert in beef cattle behaviour and precision livestock mo
           "You analyse collar sensor data and answer only with a JSON object.")
 
 
-def build_prompt(w, feats):
+def build_prompt(w, feats, lookback=48):
+    """lookback = hours of history shown (48 normally; more for the sliding-window _SW tasks)."""
     cols = ["rel_h", "hour_local"] + feats
     lines = [",".join(cols)]
     for h in w["hours"]:
@@ -38,7 +39,7 @@ def build_prompt(w, feats):
     defs = "\n".join(f"- {c}: {UNITS[c]}" for c in feats)
     return f"""A pregnant multiparous Brangus beef cow is grazing a large desert rangeland pasture with about 15 other collared cows. She is due to calve sometime in the coming weeks, but the exact date is unknown.
 
-Below are her last 48 hours of hourly collar data. rel_h=0 is now; hour_local is local clock hour (0-23). Blank cells are missing data.
+Below are her last {lookback} hours of hourly collar data. rel_h=0 is now; hour_local is local clock hour (0-23). Blank cells are missing data.
 
 Columns:
 {defs}
@@ -48,6 +49,85 @@ Her own typical values over the preceding 5 days:
 
 Data:
 {chr(10).join(lines)}
+
+Question: Is this cow calving now, or will she calve within the next 24 hours?
+
+Reply with JSON only, exactly this shape:
+{{"probability": <number 0 to 1>, "reason": "<at most 25 words>"}}"""
+
+
+RECENT_H = 48   # raw hourly rows shown in the binned (_PB) prompt
+BIN_H = 24      # prior history is summarised in bins this long
+N_BINS = 3      # ... for this many bins (72h before the raw block)
+MIN_BIN_H = 12  # a bin needs at least this many hours with data, otherwise it is left out
+
+
+def prior_bins(prior_hours, feats):
+    """Summarise hours older than the raw block into 24h bins, newest first.
+
+    prior_hours: rows with rel_h <= -RECENT_H. Bin i covers rel_h in [-RECENT_H-BIN_H*(i+1)+1, -RECENT_H-BIN_H*i].
+    Bins are anchored to "now" (not the clock), and 24h long so the day/night cycle averages out inside a bin.
+    Returns [(lo, hi, {feat: (mean, max)})]. Bins with < MIN_BIN_H hours of data are dropped.
+    """
+    out = []
+    for i in range(N_BINS):
+        hi = -RECENT_H - BIN_H * i
+        lo = hi - BIN_H + 1
+        rows = [h for h in prior_hours if lo <= h["rel_h"] <= hi]
+        stats = {}
+        for c in feats:
+            v = [h[c] for h in rows if h[c] is not None]
+            if len(v) >= MIN_BIN_H:
+                stats[c] = (sum(v) / len(v), max(v))
+        if stats:
+            out.append((lo, hi, stats))
+    return out
+
+
+def build_prompt_binned(w, feats):
+    """Like build_prompt, but: last 48h raw + the 3 days before that as 24h summary bins.
+
+    w["hours"] is the cow's full history so far (as in the _FW export), oldest first, rel_h 0 = now.
+    """
+    recent = [h for h in w["hours"] if h["rel_h"] > -RECENT_H]
+    prior = [h for h in w["hours"] if h["rel_h"] <= -RECENT_H]
+    cols = ["rel_h", "hour_local"] + feats
+    lines = [",".join(cols)] + [",".join("" if h[c] is None else str(h[c]) for c in cols) for h in recent]
+    bins = prior_bins(prior, feats)
+    bcols = ["rel_h_from", "rel_h_to"] + [f"{c}_{k}" for c in feats for k in ("mean", "max")]
+    blines = [",".join(bcols)]
+    for lo, hi, st in bins:
+        cells = [str(lo), str(hi)]
+        for c in feats:
+            cells += [f"{st[c][0]:.1f}", f"{st[c][1]:.1f}"] if c in st else ["", ""]
+        blines.append(",".join(cells))
+    base = "\n".join(f"- {c}: median {w['baseline'][c]['median']:.1f}, 90th pct {w['baseline'][c]['p90']:.1f}"
+                     for c in feats if c in w["baseline"])
+    defs = "\n".join(f"- {c}: {UNITS[c]}" for c in feats)
+    if bins:
+        earlier = f"""EARLIER CONTEXT (before the last 48 hours), summarised in 24-hour bins. Each row gives the mean and maximum of each column over that bin; a bin is left out if fewer than half of its hours had data.
+{chr(10).join(blines)}"""
+        use = "Use the earlier context to judge whether what you see in the recent hours is a real change from her own recent pattern, or just her normal day-to-day variation. Each bin covers a full 24 hours, so the day/night cycle is already averaged out within it."
+    else:
+        earlier = "EARLIER CONTEXT: none available (this is the start of her record)."
+        use = "No earlier context is available, so judge the recent hours against her typical values above."
+    return f"""A pregnant multiparous Brangus beef cow is grazing a large desert rangeland pasture with about 15 other collared cows. She is due to calve sometime in the coming weeks, but the exact date is unknown.
+
+Below is her collar data in two parts. rel_h=0 is now and counts hours back from now; hour_local is local clock hour (0-23). Blank cells are missing data.
+
+Columns (hourly rows):
+{defs}
+In the summary bins each column appears twice, as <column>_mean and <column>_max.
+
+Her own typical values over the preceding 5 days:
+{base}
+
+RECENT DATA: her last {len(recent)} hours, hourly. This is the most current evidence about her state right now, so look closely at the most recent hours and at how they compare with her typical values.
+{chr(10).join(lines)}
+
+{earlier}
+
+{use}
 
 Question: Is this cow calving now, or will she calve within the next 24 hours?
 
@@ -122,7 +202,10 @@ def _num(s):
 
 def jev_state(prompt):
     """Parse a build_prompt() string into Jev state. Raises if the prompt layout changes."""
-    intro, rest = prompt.split("\n\nBelow are her last 48 hours", 1)
+    m = re.search(r"\n\nBelow are her last (\d+) hours", prompt)
+    if m is None:
+        raise ValueError("jev_state only understands the raw-hourly prompt layout, not the binned _PB prompt")
+    intro, rest, n_h = prompt[:m.start()], prompt[m.end():], m.group(1)
     cols_txt = rest.split("Columns:\n", 1)[1].split("\n\n", 1)[0]
     base_txt = rest.split("preceding 5 days:\n", 1)[1].split("\n\nData:", 1)[0]
     data_txt = rest.split("Data:\n", 1)[1].split("\n\nQuestion:", 1)[0]
@@ -135,7 +218,7 @@ def jev_state(prompt):
     hdr = rows[0]
     return {
         "cow": intro,
-        "data_description": "Her last 48 hours of hourly collar data. rel_h=0 is now; hour_local is "
+        "data_description": f"Her last {n_h} hours of hourly collar data. rel_h=0 is now; hour_local is "
                             "local clock hour (0-23). null means missing data.",
         "column_definitions": defs,
         "her_typical_values_over_preceding_5_days": baseline,
