@@ -1,3 +1,5 @@
+<img width="2250" height="2010" alt="image" src="https://github.com/user-attachments/assets/8ddaeae0-25bd-4203-931c-21f2b7b26af2" />
+
 # Zero Shot Calving Benchmark
 
 Question: Can a LLM forecast future claving events based on multimodal sensor data, specifically, GPS and accelerometer readings
