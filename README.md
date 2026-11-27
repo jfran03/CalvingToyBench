@@ -12,7 +12,7 @@ Question: Can a LLM forecast future claving events based on multimodal sensor da
 
 # Motivation
 
-[Wang et al.](https://www.mdpi.com/2077-0472/15/13/1434/pdf) utilized traditional machine learning methods (autoencoder & random forest) to successfilly determine if the systems were able to identify 15 calving events. The paper states that evaluating the model's generalization on these types of tasks is a possible open line of research, current large language models (LLMS) could provide a solution to generalizing these tasks by using its reasoning capabilities to classify calving events. There does not exist research that investigates the use of LLMs to identify these events solely on GPS and accelerometer data, this experiment attempts to address this open question.
+[Wang et al.](https://www.mdpi.com/2077-0472/15/13/1434/pdf) utilized traditional machine learning methods (autoencoder & random forest) to successfully determine if the systems were able to identify 15 calving events. The paper states that evaluating the model's generalization on these types of tasks is a possible open line of research, current large language models (LLMS) could provide a solution to generalizing these tasks by using its reasoning capabilities to classify calving events. There does not exist research that investigates the use of LLMs to identify these events solely on GPS and accelerometer data, this experiment attempts to address this open question.
 
 ## Alert threshold: false-alarm budget
 
@@ -40,7 +40,7 @@ $$
 
 
 ## Data
-CalvingDetection (Cao et al., 2025, *Agriculture* 15(13):1434), GPL-3.0.
+CalvingDetection (Wang et al., 2025, *Agriculture* 15(13):1434), GPL-3.0.
 15 Brangus cows, New Mexico rangeland, 2023. GPS fix every 60 min, accelerometer activity every 2 min (aggregated hourly).
 Calving times are the authors' UTC labels; true birth time is only known to within ~12 h.
 
